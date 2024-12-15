@@ -25,8 +25,6 @@ class TrajectoryDataset(Dataset):
         """
         self.states = np.load(states_path, mmap_mode='r')
         self.actions = np.load(actions_path, mmap_mode='r')
-        # self.states = torch.tensor(self.states, dtype=torch.float32)
-        # self.actions = torch.tensor(self.actions, dtype=torch.float32)
         
         self.augmentations = augmentations
 
@@ -36,7 +34,6 @@ class TrajectoryDataset(Dataset):
     def __getitem__(self, idx):
         states = torch.tensor(self.states[idx], dtype=torch.float32)
         actions = torch.tensor(self.actions[idx], dtype=torch.float32)
-        # states, actions = self.states[idx], self.actions[idx]
         
         # Apply augmentations if specified
         if self.augmentations:
@@ -122,18 +119,21 @@ def shift_augmentation(states, actions):
 class Encoder(nn.Module):
     def __init__(self, in_channels=2, state_dim=256):
         super().__init__()
-        # Simple CNN encoder
+        
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(32),
             nn.GELU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
             nn.GELU(),
             nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
             nn.GELU(),
             nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
             nn.GELU(),
         )
-        # After downsampling 64x64 -> approximately 8x8 feature map
         self.fc = nn.Linear(256 * 4 * 4, state_dim)
 
     def forward(self, x):
@@ -144,7 +144,6 @@ class Encoder(nn.Module):
             h = h.view(h.size(0), -1)
             s = self.fc(h)
             s = s.view(B*T,16,4,-1)
-            # s = s.view(B, T, -1)  # Restore batch and sequence dims # (B,T,D)
         else:  # (B, C, H, W) 
             h = self.conv(x) #B, 128, 8, 8
             h = h.view(h.size(0), -1)  # Flatten for FC layer
@@ -161,17 +160,17 @@ class RecurrentPredictor(nn.Module):
         super().__init__()
         self.action_mlp = nn.Sequential(
             nn.Linear(action_dim, 128),
+            nn.LayerNorm(128),
             nn.GELU(),
             nn.Linear(128, 256),
-            #nn.GELU(),
-            #nn.Linear(128, 256)
+            nn.LayerNorm(256),
         )
         self.cnn = nn.Sequential(
             nn.Conv2d(16 + 16, cnn_channels, kernel_size=3, padding=1),
+            nn.LayerNorm([cnn_channels,4,4]),
             nn.GELU(),
             nn.Conv2d(cnn_channels, 16, kernel_size=3, padding=1),
-            #nn.GELU(),
-            #nn.Conv2d(64, 16, kernel_size=3, padding=1)
+            nn.LayerNorm([16,4,4]),
         )
 
     def forward(self, prev_state, action):
@@ -183,21 +182,12 @@ class RecurrentPredictor(nn.Module):
             next_state: Tensor of shape (B, state_dim, H, W)
         """
         B, D, H, W = prev_state.size()
-        # print(prev_state.shape)
         
-        # Pass action through MLP and reshape for spatial dimensions
         action_embedding = self.action_mlp(action)
-        # print(f'1:{action_embedding.shape}')
         action_embedding = action_embedding.view(B, D, H, W)
-        # print(f'2:{action_embedding.shape}')
-        # action_embedding = action_embedding.expand(-1, -1, H, W)
-        # print(f'3:{action_embedding.shape}')
         
-        # Concatenate state and action embeddings
         x = torch.cat([prev_state, action_embedding], dim=1)  # (B, 2 * state_dim, H, W)
-        # print(f'3:{x.shape}')
         next_state = self.cnn(x)  # (B, state_dim, H, W)
-        # print(f'4:{next_state.shape}')
         
         return next_state
 
@@ -406,30 +396,19 @@ if __name__ == "__main__":
 
     model.train()
     for epoch in range(epochs):
-        # print(f"Epoch {epoch+1}/{epochs} - Before Epoch Start")
-        # print(torch.cuda.memory_summary(device=device))
-
         total_loss = 0.0
         optimizer.zero_grad()
         
         accumulation_steps = max(final_accumulation_steps, initial_accumulation_steps - (initial_accumulation_steps - final_accumulation_steps) * epoch // epochs)
         for step, (states, actions) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")):
-            #print(f"Step {step+1} - After Data Loading")
-            #print(torch.cuda.memory_summary(device=device))
-
             t0 = time.time()
             states = states.to(device)
             actions = actions.to(device)
 
             # Compute losses
             with torch.autocast(device_type=device, dtype=torch.float16):
-                #print(f"Step {step+1} - Before Forward Pass")
-                #print(torch.cuda.memory_summary(device=device))
             
                 predicted_states, target_states, _ = model(states, actions)
-
-                #print(f"Step {step+1} - After Forward Pass")
-                #print(torch.cuda.memory_summary(device=device))
 
                 mse_loss = criterion(predicted_states, target_states)
 
@@ -449,13 +428,7 @@ if __name__ == "__main__":
                 
                 loss = weighted_mse_loss + contrast_loss
 
-            #print(f"Step {step+1} - Before Backward Pass")
-            #print(torch.cuda.memory_summary(device=device))
-
             loss.backward()
-
-            #print(f"Step {step+1} - After Backward Pass")
-            #print(torch.cuda.memory_summary(device=device))
 
             dt=0
             if (step + 1) % accumulation_steps == 0:
@@ -490,7 +463,7 @@ if __name__ == "__main__":
     plt.ylabel('Loss')
     plt.title('Training Loss Over Time')
     plt.grid(True)
-    plt.savefig('/scratch/fc1132/JEPA_world_model/plots/training_loss_Y.png')
+    plt.savefig('/scratch/fc1132/JEPA_world_model/plots/training_loss_Y_norm.png')
     #plt.show()
     # Save the trained model
-    torch.save(model.state_dict(), "/scratch/fc1132/JEPA_world_model/encoder_outputs/trained_recurrent_jepa_Y.pth")
+    torch.save(model.state_dict(), "/scratch/fc1132/JEPA_world_model/encoder_outputs/trained_recurrent_jepa_Y_norm.pth")
