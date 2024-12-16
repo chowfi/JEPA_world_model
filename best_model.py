@@ -25,8 +25,6 @@ class TrajectoryDataset(Dataset):
         """
         self.states = np.load(states_path, mmap_mode='r')
         self.actions = np.load(actions_path, mmap_mode='r')
-        
-        self.augmentations = augmentations
 
     def __len__(self):
         return self.states.shape[0]
