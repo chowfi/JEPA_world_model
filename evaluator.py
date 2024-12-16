@@ -10,7 +10,7 @@ import numpy as np
 #from matplotlib import pyplot as plt
 
 from schedulers import Scheduler, LRSchedule
-from models_512 import Prober, build_mlp
+from models import Prober, build_mlp
 from configs import ConfigBase
 
 from dataset import WallDataset
