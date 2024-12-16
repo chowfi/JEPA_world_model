@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 #########################
 
 class TrajectoryDataset(Dataset):
-    def __init__(self, states_path, actions_path, augmentations=None):
+    def __init__(self, states_path, actions_path):
         """
         Args:
             states_path (str): Path to the states .npy file.
@@ -35,78 +35,7 @@ class TrajectoryDataset(Dataset):
         states = torch.tensor(self.states[idx], dtype=torch.float32)
         actions = torch.tensor(self.actions[idx], dtype=torch.float32)
         
-        # Apply augmentations if specified
-        if self.augmentations:
-            states, actions = self.augmentations(states, actions)
-        
         return states, actions
-
-# Example augmentation function
-def flip_h(states, actions):
-    """
-    Example augmentation function for the TrajectoryDataset.
-    Args:
-        states (Tensor): Tensor of shape (T, 2, 64, 64).
-        actions (Tensor): Tensor of shape (T-1, 2).
-    
-    Returns:
-        Tuple[Tensor, Tensor]: Augmented states and actions.
-    """
-    # Random horizontal flip
-    if random.random() > 0.5:
-        states = torch.flip(states, dims=[-1])  # Flip along the width
-        actions[:, 0] = -actions[:, 0]  # Invert x-axis action
-
-    return states, actions
-
-def shift_augmentation(states, actions):
-    """
-    Example augmentation function for the TrajectoryDataset.
-    Args:
-        states (Tensor): Tensor of shape (T, 2, 64, 64).
-        actions (Tensor): Tensor of shape (T-1, 2).
-    Returns:
-        Tuple[Tensor, Tensor]: Augmented states and actions.
-    """
-    # Check for edges of the agent
-    _, _, width_non_zeros = torch.nonzero((states[:, 0] != 0), as_tuple=True)
-    width_min = width_non_zeros.min().item()
-    width_max = width_non_zeros.max().item()
-    # Check for edges of the walls
-    wall_non_zeros = torch.nonzero(states[-1, 1, 0, 5:-5] != 0)
-    wall_min = wall_non_zeros.min().item()+5
-    wall_max = wall_non_zeros.max().item()+5
-    wall_pos = int((wall_min+wall_max)/2)
-    # Identify range of the data (lowest and highest index where it is not empty space)
-    global_min_all = min(width_min, width_max, wall_min, wall_max)
-    global_max_all = max(width_min, width_max, wall_min, wall_max)
-    # Randomly determine shift (without breaking out of the box)
-    min_shift = 5 - global_min_all
-    max_shift = 59 - global_max_all
-    if global_min_all < 5 or global_max_all > 59:
-        shift = 0
-    elif min_shift is not max_shift+1 or min_shift is not max_shift:
-        try:
-            shift = torch.randint(min_shift, max_shift + 1, size=(1,))
-        except:
-            shift = 0
-    else:
-        shift = min_shift
-    if isinstance(shift, torch.Tensor):
-        shift = shift.item()
-    print(shift)
-    # In-place shift for the first channel (primary state)
-    states[:, 0].copy_(torch.roll(states[:, 0], shifts=shift, dims=2))
-    # Special handling for walls (second channel)
-    # Separate the edges and core
-    left_edge = states[:, 1, :, 0:5].clone()
-    right_edge = states[:, 1, :, -5:].clone()
-    core = states[:, 1, :, 5:-5]
-    # In-place shift of the core part
-    shifted_core = torch.roll(core, shifts=shift, dims=2)
-    # Reconstruct the wall channel
-    states[:, 1, :, 5:-5] = shifted_core
-    return states, actions
 
 #########################
 # Model Components
@@ -139,15 +68,15 @@ class Encoder(nn.Module):
     def forward(self, x):
         if x.ndimension() == 5:  # (B, T, C, H, W) 
             B, T, C, H, W = x.shape
-            x = x.view(B * T, C, H, W)  # Flatten batch and sequence dims
-            h = self.conv(x) # B * T, 128, 8, 8
+            x = x.view(B * T, C, H, W)  
+            h = self.conv(x) 
             h = h.view(h.size(0), -1)
             s = self.fc(h)
             s = s.view(B*T,16,4,-1)
         else:  # (B, C, H, W) 
-            h = self.conv(x) #B, 128, 8, 8
-            h = h.view(h.size(0), -1)  # Flatten for FC layer
-            s = self.fc(h) # (B,D)
+            h = self.conv(x) 
+            h = h.view(h.size(0), -1) 
+            s = self.fc(h) # (B, D)
             s = s.view(B,16,4,-1)
         return s
 
@@ -233,11 +162,11 @@ class JEPA(nn.Module):
         """
         B, T, _, _, _ = states.shape 
 
-        encoded_states = self.online_encoder(states)  # Shape: (B*T, 128, 8, 8) or B, 128, 8, 8 at inference
+        encoded_states = self.online_encoder(states)  #(B*T, 16, 4, 4) or (B, 16, 4, 4) at inference
         H,W = 4, 4 
-        encoded_states = encoded_states.view(B, T, -1, H, W)  # Shape: (B, T, 128, 8, 8)
+        encoded_states = encoded_states.view(B, T, -1, H, W)  # Shape: (B, T, 16, 4, 4)
         
-        initial_state = encoded_states[:, 0] # Shape: (B, 128, 8, 8)
+        initial_state = encoded_states[:, 0] # Shape: (B, 16, 4, 4)
         predicted_states = []
         prev_state = initial_state
 
@@ -254,7 +183,7 @@ class JEPA(nn.Module):
         else:  # Inference scenario
             target_next_states = 0  # Placeholder value for inference
 
-        all_states = torch.cat([initial_state.view(B, 1, -1), predicted_states], dim=1)  # Shape: (B, T, 128*8*8)
+        all_states = torch.cat([initial_state.view(B, 1, -1), predicted_states], dim=1)  # Shape: (B, T, D)
 
         return predicted_states, target_next_states, all_states
 
@@ -312,10 +241,10 @@ def scheduled_loss_weight(epoch, total_epochs, T, mode="linear"):
         Tensor: Weights for each timestep.
     """
     if mode == "linear":
-        weight = torch.linspace(1.0, (epoch / total_epochs), T)  # Linearly increasing weights
+        weight = torch.linspace(1.0, (epoch / total_epochs), T) 
     elif mode == "exponential":
         factor = epoch / total_epochs
-        weight = torch.tensor([(factor ** t) for t in range(1, T + 1)])  # Exponentially increasing weights
+        weight = torch.tensor([(factor ** t) for t in range(1, T + 1)]) 
     else:
         raise ValueError(f"Unknown mode: {mode}")
     
@@ -375,8 +304,8 @@ if __name__ == "__main__":
     action_dim = 2
     hidden_dim = 128
     cnn_channels = 64
-    initial_accumulation_steps = 4  # Initial number of steps to accumulate gradients
-    final_accumulation_steps = 4    # Final number of steps to accumulate gradients
+    initial_accumulation_steps = 4  
+    final_accumulation_steps = 4   
     
     # Load data
     train_dataset = TrajectoryDataset("/scratch/DL24FA/train/states.npy", "/scratch/DL24FA/train/actions.npy")
@@ -390,7 +319,6 @@ if __name__ == "__main__":
 
     optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(0.90, 0.99), eps=1e-8)
     criterion = nn.MSELoss()
-    #scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader) * epochs, eta_min=lr*0.1)
     
     loss_history = []
 
@@ -452,7 +380,7 @@ if __name__ == "__main__":
             loss_history.append(loss.item())
             print(f"loss {loss.item()}, dt {dt:.2f}ms")
         
-        #scheduler.step()
+        
         avg_loss = total_loss / len(train_loader)
         print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
 
@@ -464,6 +392,6 @@ if __name__ == "__main__":
     plt.title('Training Loss Over Time')
     plt.grid(True)
     plt.savefig('/scratch/fc1132/JEPA_world_model/plots/training_loss_Z_tuned.png')
-    #plt.show()
-    # Save the trained model
+    # plt.show()
+    
     torch.save(model.state_dict(), "/scratch/fc1132/JEPA_world_model/encoder_outputs/trained_recurrent_jepa_Z_tuned.pth")
