@@ -369,7 +369,7 @@ if __name__ == "__main__":
 
     # Hyperparams
     batch_size = 64
-    lr = 3e-5*2
+    lr = 3e-4*2
     epochs = 20
     state_dim = 256
     action_dim = 2
